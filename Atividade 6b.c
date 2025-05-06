@@ -1,75 +1,64 @@
-#include <stdio.h>
+#include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "driver/gpio.h"
 #include "esp_log.h"
+#include <inttypes.h>
 
-// Definição dos pinos
-#define BUTTON_R_PIN GPIO_NUM_12  // --> Botão para LED Vermelho
-#define BUTTON_G_PIN GPIO_NUM_14  // --> Botão para LED Verde
-#define BUTTON_B_PIN GPIO_NUM_27  // --> Botão para LED Azul
-#define LED_R_PIN    GPIO_NUM_26  // --> Pino do LED Vermelho
-#define LED_G_PIN    GPIO_NUM_25  // --> Pino do LED Verde
-#define LED_B_PIN    GPIO_NUM_33  // --> Pino do LED Azul
-#define DEBOUNCE_MS  50           // --> Tempo de debounce (ms)
+#define BUTTON_R  GPIO_NUM_12
+#define BUTTON_G  GPIO_NUM_14
+#define BUTTON_B  GPIO_NUM_27
+#define LED_R     GPIO_NUM_26
+#define LED_G     GPIO_NUM_25
+#define LED_B     GPIO_NUM_33
+#define DEBOUNCE_MS 50
 
-static const char *TAG = "RGB_CONTROL";
-volatile uint32_t lastRTime = 0, lastGTime = 0, lastBTime = 0;  // --> Tempos dos últimos eventos
+static const char *TAG = "RGB Control";
 
-// ISR para o botão do LED Vermelho
-void IRAM_ATTR button_r_isr(void *arg) {
-    uint32_t currentTime = xTaskGetTickCountFromISR() * portTICK_PERIOD_MS;  // --> Tempo atual
-    if (currentTime - lastRTime > DEBOUNCE_MS) {  // --> Debounce
-        gpio_set_level(LED_R_PIN, !gpio_get_level(LED_R_PIN));  // --> Inverte o estado do LED
+typedef struct {
+    gpio_num_t button_pin;
+    gpio_num_t led_pin;
+    uint32_t last_press;
+} button_led_t;
+
+button_led_t buttons[] = {
+    {BUTTON_R, LED_R, 0},
+    {BUTTON_G, LED_G, 0},
+    {BUTTON_B, LED_B, 0}
+};
+
+void IRAM_ATTR button_isr_handler(void* arg) {
+    uint32_t idx = (uint32_t)arg;
+    uint32_t now = xTaskGetTickCountFromISR() * portTICK_PERIOD_MS;
+    
+    if (now - buttons[idx].last_press > DEBOUNCE_MS) {
+        gpio_set_level(buttons[idx].led_pin, !gpio_get_level(buttons[idx].led_pin));
     }
-    lastRTime = currentTime;  // --> Atualiza o tempo
-}
-
-// ISR para o botão do LED Verde (mesma lógica)
-void IRAM_ATTR button_g_isr(void *arg) {
-    uint32_t currentTime = xTaskGetTickCountFromISR() * portTICK_PERIOD_MS;
-    if (currentTime - lastGTime > DEBOUNCE_MS) {
-        gpio_set_level(LED_G_PIN, !gpio_get_level(LED_G_PIN));
-    }
-    lastGTime = currentTime;
-}
-
-// ISR para o botão do LED Azul (mesma lógica)
-void IRAM_ATTR button_b_isr(void *arg) {
-    uint32_t currentTime = xTaskGetTickCountFromISR() * portTICK_PERIOD_MS;
-    if (currentTime - lastBTime > DEBOUNCE_MS) {
-        gpio_set_level(LED_B_PIN, !gpio_get_level(LED_B_PIN));
-    }
-    lastBTime = currentTime;
+    buttons[idx].last_press = now;
 }
 
 void app_main() {
-    // Configuração dos botões
-    gpio_config_t btn_config = {
-        .pin_bit_mask = (1ULL << BUTTON_R_PIN) | (1ULL << BUTTON_G_PIN) | (1ULL << BUTTON_B_PIN),  // --> Múltiplos pinos
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-        .intr_type = GPIO_INTR_NEGEDGE  // --> Interrupção na borda de descida
-    };
-    gpio_config(&btn_config);  // --> Aplica a configuração
-
-    // Configuração dos LEDs
-    gpio_config_t led_config = {
-        .pin_bit_mask = (1ULL << LED_R_PIN) | (1ULL << LED_G_PIN) | (1ULL << LED_B_PIN),
+    // Configura LEDs
+    gpio_config_t led_conf = {
+        .pin_bit_mask = (1ULL << LED_R) | (1ULL << LED_G) | (1ULL << LED_B),
         .mode = GPIO_MODE_OUTPUT
     };
-    gpio_config(&led_config);
+    gpio_config(&led_conf);
 
-    // Inicializa LEDs desligados
-    gpio_set_level(LED_R_PIN, 0);
-    gpio_set_level(LED_G_PIN, 0);
-    gpio_set_level(LED_B_PIN, 0);
+    // Configura botões
+    gpio_config_t btn_conf = {
+        .pin_bit_mask = (1ULL << BUTTON_R) | (1ULL << BUTTON_G) | (1ULL << BUTTON_B),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .intr_type = GPIO_INTR_NEGEDGE
+    };
+    gpio_config(&btn_conf);
 
-    // Instala e configura as ISRs
+    // Instala ISRs
     gpio_install_isr_service(0);
-    gpio_isr_handler_add(BUTTON_R_PIN, button_r_isr, NULL);
-    gpio_isr_handler_add(BUTTON_G_PIN, button_g_isr, NULL);
-    gpio_isr_handler_add(BUTTON_B_PIN, button_b_isr, NULL);
+    for (int i = 0; i < 3; i++) {
+        gpio_isr_handler_add(buttons[i].button_pin, button_isr_handler, (void*)i);
+    }
 
-    ESP_LOGI(TAG, "Sistema RGB com debounce pronto.");  // --> Mensagem inicial
+    ESP_LOGI(TAG, "Controle RGB inicializado. Botões configurados em GPIO %" PRIu32 ", %" PRIu32 ", %" PRIu32, 
+             BUTTON_R, BUTTON_G, BUTTON_B);
 }
